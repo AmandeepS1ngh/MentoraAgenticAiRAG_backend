@@ -36,15 +36,57 @@ initRedis().catch(err => logger.error('Failed to initialize Redis', err));
 // Enable CORS
 const allowedOrigins = process.env.CORS_ORIGINS
     ? process.env.CORS_ORIGINS.split(',').map(o => o.trim())
-    : ['*'];
+    : [
+        'https://mentora-agentic-ai-frontend-7imf62s7u.vercel.app',
+        'https://mentora-agentic-ai-frontend.vercel.app',
+        'http://localhost:3000',
+        'http://localhost:3001'
+    ];
 
-app.use(cors({
-    origin: process.env.NODE_ENV === 'production'
-        ? allowedOrigins
-        : '*',
-    methods: ['GET', 'POST'],
-    allowedHeaders: ['Content-Type', 'Authorization']
-}));
+// CORS configuration with proper origin handling
+const corsOptions = {
+    origin: function (origin, callback) {
+        // Allow requests with no origin (like mobile apps, curl, Postman)
+        if (!origin) {
+            return callback(null, true);
+        }
+
+        // Check if the origin is allowed
+        // In development, allow all origins
+        if (process.env.NODE_ENV !== 'production') {
+            return callback(null, true);
+        }
+
+        // In production, check against allowed origins
+        // Also allow any Vercel preview deployment URLs
+        const isAllowed = allowedOrigins.some(allowed => {
+            if (allowed === '*') return true;
+            if (origin === allowed) return true;
+            // Allow any Vercel preview URLs for this project
+            if (origin.includes('mentora-agentic-ai-frontend') && origin.includes('vercel.app')) {
+                return true;
+            }
+            return false;
+        });
+
+        if (isAllowed) {
+            callback(null, true);
+        } else {
+            logger.warn(`CORS: Blocked origin ${origin}`);
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
+    credentials: true,
+    optionsSuccessStatus: 200 // Some legacy browsers choke on 204
+};
+
+// Apply CORS middleware
+app.use(cors(corsOptions));
+
+// Handle preflight requests explicitly for all routes
+app.options('*', cors(corsOptions));
 
 // Parse JSON bodies
 // TODO: Add request body size limit
