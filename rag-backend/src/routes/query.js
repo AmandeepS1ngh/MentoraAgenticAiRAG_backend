@@ -16,6 +16,7 @@ const express = require('express');
 const router = express.Router();
 
 const { asyncHandler, AppError } = require('../middleware/errorHandler');
+const { authenticate } = require('../middleware/auth');
 const { generateEmbedding } = require('../services/embeddings');
 const { searchSimilar } = require('../db/supabase');
 const { generateAnswer } = require('../services/llm');
@@ -27,7 +28,7 @@ const logger = require('../utils/logger');
  * POST /query
  * Ask a question and get a grounded answer
  */
-router.post('/', asyncHandler(async (req, res) => {
+router.post('/', authenticate, asyncHandler(async (req, res) => {
     const startTime = Date.now();
     const timings = {};
 
@@ -69,9 +70,9 @@ router.post('/', asyncHandler(async (req, res) => {
     const queryEmbedding = await generateEmbedding(question);
     timings.embedding = Date.now() - embedStart;
 
-    // Step 2: Perform vector similarity search
+    // Step 2: Perform vector similarity search (filtered by user)
     let searchStart = Date.now();
-    const similarChunks = await searchSimilar(queryEmbedding, resultLimit);
+    const similarChunks = await searchSimilar(queryEmbedding, resultLimit, req.userId);
     timings.search = Date.now() - searchStart;
 
     // Handle case where no relevant chunks found

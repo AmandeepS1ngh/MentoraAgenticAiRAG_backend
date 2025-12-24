@@ -17,6 +17,7 @@ const multer = require('multer');
 const router = express.Router();
 
 const { asyncHandler, AppError } = require('../middleware/errorHandler');
+const { authenticate } = require('../middleware/auth');
 const { extractText, isValidPdf } = require('../services/pdfExtractor');
 const { chunkText, preprocessText } = require('../services/chunker');
 const { generateEmbeddings } = require('../services/embeddings');
@@ -45,11 +46,11 @@ const upload = multer({
  * POST /ingest
  * Upload and process a PDF document
  */
-router.post('/', upload.single('file'), asyncHandler(async (req, res) => {
+router.post('/', authenticate, upload.single('file'), asyncHandler(async (req, res) => {
     const startTime = Date.now();
     const timings = {};
 
-    logger.info('Received upload request');
+    logger.info('Received upload request', { userId: req.userId });
 
     // Validate file upload
     if (!req.file) {
@@ -108,9 +109,9 @@ router.post('/', upload.single('file'), asyncHandler(async (req, res) => {
         logger.info('Step 4: Storing in Supabase...');
         let storeStart = Date.now();
 
-        // Create parent document record
-        const document = await createDocument(fileName);
-        logger.info(`Document created with ID: ${document.id}`);
+        // Create parent document record with user_id
+        const document = await createDocument(fileName, req.userId);
+        logger.info(`Document created with ID: ${document.id}`, { userId: req.userId });
 
         // Combine chunks with embeddings
         const chunksWithEmbeddings = chunks.map((chunk, index) => ({
@@ -118,8 +119,8 @@ router.post('/', upload.single('file'), asyncHandler(async (req, res) => {
             embedding: embeddings[index]
         }));
 
-        // Insert chunks with embeddings
-        await insertChunks(document.id, chunksWithEmbeddings);
+        // Insert chunks with embeddings and user_id
+        await insertChunks(document.id, chunksWithEmbeddings, req.userId);
         timings.storage = Date.now() - storeStart;
         logger.info('Storage completed');
 

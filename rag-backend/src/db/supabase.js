@@ -23,14 +23,20 @@ const supabase = createClient(
 /**
  * Create a new document record
  * @param {string} title - Document title/filename
+ * @param {string} userId - Owner's user ID (optional, required after RLS migration)
  * @returns {Promise<Object>} Created document record
  */
-async function createDocument(title) {
+async function createDocument(title, userId = null) {
     const startTime = Date.now();
+
+    const insertData = { title };
+    if (userId) {
+        insertData.user_id = userId;
+    }
 
     const { data, error } = await supabase
         .from('documents')
-        .insert({ title })
+        .insert(insertData)
         .select()
         .single();
 
@@ -39,7 +45,7 @@ async function createDocument(title) {
         throw new Error(`Database error: ${error.message}`);
     }
 
-    logger.debug(`Created document in ${Date.now() - startTime}ms`, { documentId: data.id });
+    logger.debug(`Created document in ${Date.now() - startTime}ms`, { documentId: data.id, userId });
     return data;
 }
 
@@ -49,13 +55,14 @@ async function createDocument(title) {
  * 
  * @param {string} documentId - Parent document ID
  * @param {Array<{content: string, embedding: number[]}>} chunks - Chunks with embeddings
+ * @param {string} userId - Owner's user ID (optional, required after RLS migration)
  * @returns {Promise<Array>} Inserted chunk records
  * 
  * TODO: Implement batch insert using Supabase's bulk insert
  * TODO: Add transaction support for atomic operations
  * TODO: Consider using COPY for large batch inserts
  */
-async function insertChunks(documentId, chunks) {
+async function insertChunks(documentId, chunks, userId = null) {
     const startTime = Date.now();
     const insertedChunks = [];
 
@@ -63,17 +70,23 @@ async function insertChunks(documentId, chunks) {
     for (let i = 0; i < chunks.length; i++) {
         const chunk = chunks[i];
 
+        const insertData = {
+            document_id: documentId,
+            content: chunk.content,
+            embedding: chunk.embedding,
+            metadata: {
+                chunkIndex: i,
+                charCount: chunk.content.length
+            }
+        };
+
+        if (userId) {
+            insertData.user_id = userId;
+        }
+
         const { data, error } = await supabase
             .from('document_chunks')
-            .insert({
-                document_id: documentId,
-                content: chunk.content,
-                embedding: chunk.embedding,
-                metadata: {
-                    chunkIndex: i,
-                    charCount: chunk.content.length
-                }
-            })
+            .insert(insertData)
             .select()
             .single();
 
@@ -104,38 +117,46 @@ async function insertChunks(documentId, chunks) {
  * 
  * @param {number[]} queryEmbedding - Query vector
  * @param {number} limit - Number of results to return
+ * @param {string} userId - Filter by user ID (optional, required after RLS migration)
  * @returns {Promise<Array>} Top-K similar chunks with scores
  * 
  * TODO: Add filtering by document ID or metadata
  * TODO: Implement hybrid search (vector + keyword)
  * TODO: Add caching for frequent queries
  */
-async function searchSimilar(queryEmbedding, limit = 5) {
+async function searchSimilar(queryEmbedding, limit = 5, userId = null) {
     const startTime = Date.now();
 
     logger.debug('Searching with embedding', {
-        embeddingLength: queryEmbedding.length
+        embeddingLength: queryEmbedding.length,
+        userId
     });
 
     try {
-        // Get all chunks with embeddings from database
-        const { data: allChunks, error } = await supabase
+        // Build query - optionally filter by user
+        let query = supabase
             .from('document_chunks')
             .select('id, document_id, content, metadata, embedding')
             .not('embedding', 'is', null);
-        
+
+        if (userId) {
+            query = query.eq('user_id', userId);
+        }
+
+        const { data: allChunks, error } = await query;
+
         if (error) {
             logger.error('Failed to fetch chunks', { error: error.message });
             throw error;
         }
-        
+
         if (!allChunks || allChunks.length === 0) {
             logger.warn('No chunks found in database');
             return [];
         }
-        
+
         logger.debug(`Found ${allChunks.length} chunks, computing similarities...`);
-        
+
         // Compute cosine similarity for each chunk
         const results = allChunks.map(chunk => {
             // Parse embedding if it's a string
@@ -151,7 +172,7 @@ async function searchSimilar(queryEmbedding, limit = 5) {
                         .map(Number);
                 }
             }
-            
+
             const similarity = cosineSimilarity(queryEmbedding, storedEmbedding);
             return {
                 id: chunk.id,
@@ -161,17 +182,17 @@ async function searchSimilar(queryEmbedding, limit = 5) {
                 similarity: similarity * 100  // Convert to percentage
             };
         });
-        
+
         // Sort by similarity (descending) and take top K
         results.sort((a, b) => b.similarity - a.similarity);
         const topResults = results.slice(0, limit);
-        
+
         logger.info(`Vector search completed in ${Date.now() - startTime}ms`, {
             totalChunks: allChunks.length,
             resultCount: topResults.length,
             topSimilarity: topResults[0]?.similarity.toFixed(2)
         });
-        
+
         return topResults;
     } catch (err) {
         logger.error('Vector search failed', { error: err.message });
@@ -184,23 +205,23 @@ async function searchSimilar(queryEmbedding, limit = 5) {
  */
 function cosineSimilarity(a, b) {
     if (!a || !b) return 0;
-    
+
     // Ensure both are arrays
     const arrA = Array.isArray(a) ? a : Object.values(a);
     const arrB = Array.isArray(b) ? b : Object.values(b);
-    
+
     if (arrA.length !== arrB.length) return 0;
-    
+
     let dotProduct = 0;
     let normA = 0;
     let normB = 0;
-    
+
     for (let i = 0; i < arrA.length; i++) {
         dotProduct += arrA[i] * arrB[i];
         normA += arrA[i] * arrA[i];
         normB += arrB[i] * arrB[i];
     }
-    
+
     if (normA === 0 || normB === 0) return 0;
     return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
 }
